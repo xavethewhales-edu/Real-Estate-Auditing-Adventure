@@ -3445,94 +3445,80 @@ function loadInteractionAudioMCScene(id) {
 // ─────────────────────────────────────────────────────────────────────────────
 function loadVideoMultiQuestionScene(id) {
   const scene = scenes[id];
-
-  // 🔄 Optional cross-scene tally reset
-  if (scene?.tallyKey && scene.tallyReset) {
-    try { tallyReset(scene.tallyKey, scene.tallyMax ?? (scene.questions?.length || null)); } catch(_) {}
-  }
-
   if (!scene) { console.error(`Scene ${id} not found.`); return; }
 
-  const VMQ_DEFAULT_SECONDS = 15; // fallback default
+  // Optional cross-scene tally reset
+  try {
+    if (scene.tallyKey && scene.tallyReset && typeof tallyReset === 'function') {
+      tallyReset(scene.tallyKey, scene.tallyMax ?? (scene.questions?.length || null));
+    }
+  } catch(_) {}
+
+  const VMQ_DEFAULT_SECONDS = 15;
 
   // Safe shorthands
   const regNode     = window.registerNode     || function(){};
   const regListener = window.registerListener || function(t,e,h){ t.addEventListener(e,h); };
   const regCleanup  = window.registerCleanup  || function(){};
 
-  const gameContainer = document.getElementById("game-container");
+  const game = document.getElementById("game-container");
   const sceneText = document.getElementById("scene-text");
-
-  // Nuke stale UI
-  ["scene-video","video-multi-question-timer","video-multi-question-options","video-multi-question-feedback"]
-    .forEach(id => { const n = document.getElementById(id); if (n) n.remove(); });
-
-  if (gameContainer) gameContainer.style.display = "block";
+  if (game) game.style.display = "block";
   if (sceneText) { sceneText.style.display = "block"; sceneText.textContent = scene.text || ""; }
 
-  // ── Video (mobile-safe)
-  const videoWrap = document.createElement("div");
-  videoWrap.style.cssText = "position:relative;max-width:100%;margin:0 auto 16px;";
+  // Clear stale UI
+  ["vmq-wrap","scene-video","video-multi-question-timer","video-multi-question-options","video-multi-question-feedback"]
+    .forEach(x => { const n = document.getElementById(x); if (n) n.remove(); });
 
-  const videoElem = document.createElement("video");
-  videoElem.id = "scene-video";
-  videoElem.controls = true;
-  videoElem.preload = "metadata";
-  if (scene.poster) videoElem.poster = scene.poster;
-  videoElem.src = scene.videoSrc;
-  videoElem.style.cssText = "width:100%;height:auto;max-height:45vh;display:block;border-radius:12px;background:#000;";
-  // iOS inline playback
-  videoElem.setAttribute("playsinline", "");
-  videoElem.setAttribute("webkit-playsinline", "");
-  videoElem.playsInline = true;
+  // Wrapper + video (inline-safe)
+  const wrap = document.createElement("div");
+  wrap.id = "vmq-wrap";
+  wrap.style.cssText = "position:relative;max-width:100%;margin:0 auto 16px;";
+  game.appendChild(wrap);
 
-  // Tap-to-play overlay (required on iOS if unmuted)
-  const playOverlay = document.createElement("button");
-  playOverlay.textContent = "▶ Tap to Play";
-  playOverlay.style.cssText = "position:absolute;inset:auto 0 0 0;margin:auto;top:0;bottom:0;width:180px;height:48px;" +
-                              "background:#00ffff;color:#000;border:none;border-radius:10px;font-weight:700;cursor:pointer";
-  const hideOverlay = () => { if (playOverlay.parentNode) playOverlay.remove(); };
+  const video = document.createElement("video");
+  video.id = "scene-video";
+  video.controls = true;
+  video.preload = "metadata";
+  if (scene.poster) video.poster = scene.poster;
+  video.src = scene.videoSrc;
+  video.style.cssText = "width:100%;height:auto;max-height:45vh;display:block;border-radius:12px;background:#000;";
+  video.setAttribute("playsinline", "");
+  video.setAttribute("webkit-playsinline", "");
+  video.playsInline = true;
+  regNode(video);
 
-  playOverlay.onclick = async () => {
-    try { await videoElem.play(); hideOverlay(); } catch(e) { console.warn("User play failed:", e); }
-  };
+  const overlay = document.createElement("button");
+  overlay.textContent = "▶ Tap to Play";
+  overlay.style.cssText = "position:absolute;inset:auto 0 0 0;margin:auto;top:0;bottom:0;width:180px;height:48px;background:#00ffff;color:#000;border:none;border-radius:10px;font-weight:700;cursor:pointer";
+  overlay.onclick = async () => { try { await video.play(); overlay.remove(); } catch(_){} };
+  video.addEventListener("play", () => { if (overlay.parentNode) overlay.remove(); });
 
-  // On first user interaction with video controls, hide overlay
-  videoElem.addEventListener("play", hideOverlay);
+  const skipBtn = document.createElement("button");
+  skipBtn.textContent = "Skip video";
+  skipBtn.style.cssText = "margin-top:8px;padding:8px 12px;border:none;border-radius:8px;background:#222;color:#eee;cursor:pointer;font-weight:700";
+  skipBtn.onclick = () => startQuestions();
 
-  // Fallback if the video errors (bad codec, etc.)
-  videoElem.addEventListener("error", () => {
-    hideOverlay();
+  const errorMsg = () => {
     const msg = document.createElement("div");
     msg.style.cssText = "margin-top:8px;color:orange;font-weight:700";
     msg.textContent = "⚠️ This device can’t play the video inline.";
     const a = document.createElement("a");
-    a.href = scene.videoSrc;
-    a.target = "_blank";
+    a.href = scene.videoSrc; a.target = "_blank";
     a.textContent = "Open video in a new tab";
     a.style.cssText = "display:inline-block;margin-left:8px;color:#0ff;text-decoration:underline";
     msg.appendChild(a);
-    videoWrap.appendChild(msg);
-  });
+    wrap.appendChild(msg);
+  };
+  video.addEventListener("error", errorMsg);
 
-  videoWrap.appendChild(videoElem);
-  videoWrap.appendChild(playOverlay);
-  gameContainer.insertBefore(videoWrap, sceneText ? sceneText.nextSibling : null);
-  regNode(videoElem);
+  wrap.appendChild(video);
+  wrap.appendChild(overlay);
+  wrap.appendChild(skipBtn);
 
   // State
   const questions = Array.isArray(scene.questions) ? scene.questions : [];
-  let qIndex = 0;
-  let score = 0;
-  let timerInterval = null;
-  let timeLeft = 0;
-
-  // Optional SKIP button (start questions without finishing the video)
-  const skipBtn = document.createElement("button");
-  skipBtn.textContent = "Skip video";
-  skipBtn.style.cssText = "margin-top:8px;padding:8px 12px;border:none;border-radius:8px;background:#222;color:#eee;cursor:pointer;font-weight:700";
-  skipBtn.onclick = () => onVideoEnded();
-  videoWrap.appendChild(skipBtn);
+  let qIndex = 0, score = 0, timerInterval = null, timeLeft = 0;
 
   function resolveTimerSeconds(scene, q) {
     const pick = (v) => {
@@ -3541,43 +3527,46 @@ function loadVideoMultiQuestionScene(id) {
       const n = Number(v);
       return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
     };
-    const perQ     = pick(q && q.timer);
+    const perQ = pick(q && q.timer);
     const perScene = pick(scene && scene.timer);
     return (perQ != null) ? perQ : (perScene != null ? perScene : VMQ_DEFAULT_SECONDS);
   }
-
   function clearTimer(){ if (timerInterval) { clearInterval(timerInterval); timerInterval = null; } }
 
-  function cleanupQuestionUI() {
-    ["video-multi-question-timer","video-multi-question-options","video-multi-question-feedback"]
-      .forEach(id => { const el = document.getElementById(id); if (el) el.remove(); });
-    clearTimer();
-  }
-
   function finish() {
-    cleanupQuestionUI();
-    try { videoElem.pause(); } catch(_) {}
-    if (videoWrap.parentNode) videoWrap.remove();
+    // cleanup
+    ["video-multi-question-timer","video-multi-question-options","video-multi-question-feedback"].forEach(x => { const n = document.getElementById(x); if (n) n.remove(); });
+    clearTimer();
+    try { video.pause(); } catch(_){}
+    if (wrap && wrap.parentNode) wrap.remove();
 
     if (scene.scoring && scene.endings) {
       const { high = Infinity, medium = -Infinity } = scene.scoring;
-      let dest;
-      if (score >= high) dest = scene.endings.high;
-      else if (score >= medium) dest = scene.endings.medium;
-      else dest = scene.endings.low;
+      const dest = (score >= high) ? scene.endings.high
+                 : (score >= medium) ? scene.endings.medium
+                 : scene.endings.low;
       if (dest) return loadScene(dest);
     }
     if (scene.next) return loadScene(scene.next);
     console.warn("video-multi-question: No endings or next specified.");
   }
 
+  function startQuestions() {
+    wrap.style.display = "none";
+    try { video.pause(); } catch(_){}
+    qIndex = 0; score = 0;
+    renderQuestion();
+  }
+
   function renderQuestion() {
     if (qIndex >= questions.length) return finish();
-    cleanupQuestionUI();
+
+    // clear old
+    ["video-multi-question-timer","video-multi-question-options","video-multi-question-feedback"].forEach(x => { const n = document.getElementById(x); if (n) n.remove(); });
+    clearTimer();
 
     const q = questions[qIndex];
     if (!q) { console.error(`Question ${qIndex} missing`); return finish(); }
-
     if (sceneText) sceneText.textContent = q.text || "";
 
     // Timer
@@ -3588,15 +3577,15 @@ function loadVideoMultiQuestionScene(id) {
       timerDiv.id = "video-multi-question-timer";
       timerDiv.style.cssText = "font-weight:700;font-size:1.1rem;color:#00ffff;margin-top:10px;";
       timerDiv.textContent = `⏳ Time left: ${timeLeft}s`;
-      gameContainer.appendChild(timerDiv);
+      game.appendChild(timerDiv);
 
-      clearTimer();
       timerInterval = setInterval(() => {
         timeLeft -= 1;
-        if (timerDiv) timerDiv.textContent = `⏳ Time left: ${Math.max(0, timeLeft)}s`;
+        if (timerDiv) timerDiv.textContent = `⏳ Time left: ${Math.max(0,timeLeft)}s`;
         if (timeLeft <= 0) {
           clearTimer();
-          try { if (scene.tallyKey && typeof tallyAdd === 'function') tallyAdd(scene.tallyKey, 0); } catch(_) {}
+          // count a miss in cross-scene tally if enabled
+          try { if (scene.tallyKey && typeof tallyAdd === 'function') tallyAdd(scene.tallyKey, 0); } catch(_){}
           feedback("⏲️ Time's up. Moving on...", "orange", false, true);
         }
       }, 1000);
@@ -3606,51 +3595,49 @@ function loadVideoMultiQuestionScene(id) {
     const optionsDiv = document.createElement("div");
     optionsDiv.id = "video-multi-question-options";
     optionsDiv.style.marginTop = "15px";
-    gameContainer.appendChild(optionsDiv);
+    game.appendChild(optionsDiv);
 
     const feedbackDiv = document.createElement("div");
     feedbackDiv.id = "video-multi-question-feedback";
     feedbackDiv.style.cssText = "margin-top:15px;font-weight:700;";
-    gameContainer.appendChild(feedbackDiv);
+    game.appendChild(feedbackDiv);
 
-    function disableOptions() { [...optionsDiv.children].forEach(b => b.disabled = true); }
-
+    function disable(){ [...optionsDiv.children].forEach(b => b.disabled = true); }
     function feedback(msg, color, isCorrect, timedOut=false) {
-      clearTimer();
-      disableOptions();
+      clearTimer(); disable();
       feedbackDiv.textContent = msg;
       feedbackDiv.style.color = color;
       if (isCorrect) score++;
       setTimeout(() => { qIndex++; renderQuestion(); }, timedOut ? 900 : 700);
     }
 
-    (q.options || []).forEach((opt, i) => {
+    const opts = Array.isArray(q.options) ? q.options.slice() : [];
+    const correctIndex = Number(q.correct);
+
+    // optional shuffle
+    if (scene.shuffleOptions) {
+      for (let i=opts.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [opts[i],opts[j]]=[opts[j],opts[i]]; }
+    }
+
+    opts.forEach((opt, i) => {
       const btn = document.createElement("button");
-      btn.textContent = typeof opt === "string" ? opt : String(opt);
+      btn.textContent = (typeof opt === "string") ? opt : String(opt);
       btn.style.cssText = "margin:5px;padding:8px 16px;font-weight:700;background:#00ffff;border:none;border-radius:8px;cursor:pointer";
       btn.onmouseenter = () => (btn.style.backgroundColor = "#00cccc");
       btn.onmouseleave = () => (btn.style.backgroundColor = "#00ffff");
       regListener(btn, "click", () => {
-        const correctIndex = Number(q.correct);
         const ok = (i === correctIndex);
-        try { if (scene.tallyKey && typeof tallyAdd === 'function') tallyAdd(scene.tallyKey, ok ? (scene.tallyWeight || 1) : 0); } catch(_) {}
+        // cross-scene tally (optional)
+        try { if (scene.tallyKey && typeof tallyAdd === 'function') tallyAdd(scene.tallyKey, ok ? (scene.tallyWeight || 1) : 0); } catch(_){}
         feedback(ok ? "✅ Correct! Moving on..." : "❌ Not quite. Moving on...", ok ? "lightgreen" : "salmon", ok);
       });
       optionsDiv.appendChild(btn);
     });
   }
 
-  function onVideoEnded() {
-    // Hide video panel, start questions
-    videoWrap.style.display = "none";
-    if (sceneText) sceneText.textContent = "";
-    qIndex = 0;
-    score = 0;
-    renderQuestion();
-  }
-
-  regListener(videoElem, "ended", onVideoEnded);
+  regListener(video, "ended", startQuestions);
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mobile-safe VIDEO → MULTI *AUDIO* CHOICE (each option is an audio clip)
@@ -4186,6 +4173,7 @@ function loadVideoFillBlankScene(id) {
   const scene = scenes[id];
   if (!scene) { console.error(`Scene ${id} not found.`); return; }
 
+  // Safe shorthands
   const regNode     = window.registerNode     || function(){};
   const regListener = window.registerListener || function(t,e,h){ t.addEventListener(e,h); };
   const regCleanup  = window.registerCleanup  || function(){};
@@ -4195,12 +4183,12 @@ function loadVideoFillBlankScene(id) {
   if (game) game.style.display = "block";
   if (sceneText) { sceneText.style.display = "block"; sceneText.textContent = scene.text || ""; }
 
-  // Clear prior UI
-  ["video-fillblank-wrap","fill-blank-ui","scene-video"].forEach(id => { const n = document.getElementById(id); if (n) n.remove(); });
+  // Clear stale UI
+  ["vfb-wrap","vfb-ui","scene-video"].forEach(x => { const n = document.getElementById(x); if (n) n.remove(); });
 
-  // Video wrapper
+  // ---- Inline-safe video wrapper
   const wrap = document.createElement("div");
-  wrap.id = "video-fillblank-wrap";
+  wrap.id = "vfb-wrap";
   wrap.style.cssText = "position:relative;max-width:100%;margin:0 auto 16px;";
   game.appendChild(wrap);
 
@@ -4218,9 +4206,8 @@ function loadVideoFillBlankScene(id) {
 
   const overlay = document.createElement("button");
   overlay.textContent = "▶ Tap to Play";
-  overlay.style.cssText = "position:absolute;inset:auto 0 0 0;margin:auto;top:0;bottom:0;width:180px;height:48px;" +
-                          "background:#00ffff;color:#000;border:none;border-radius:10px;font-weight:700;cursor:pointer";
-  overlay.onclick = async () => { try { await video.play(); overlay.remove(); } catch(e){} };
+  overlay.style.cssText = "position:absolute;inset:auto 0 0 0;margin:auto;top:0;bottom:0;width:180px;height:48px;background:#00ffff;color:#000;border:none;border-radius:10px;font-weight:700;cursor:pointer";
+  overlay.onclick = async () => { try { await video.play(); overlay.remove(); } catch(_){} };
   video.addEventListener("play", () => { if (overlay.parentNode) overlay.remove(); });
 
   const skipBtn = document.createElement("button");
@@ -4245,129 +4232,155 @@ function loadVideoFillBlankScene(id) {
   wrap.appendChild(overlay);
   wrap.appendChild(skipBtn);
 
-  function sameToken(a,b){
-    const norm = s => String(s||'')
-      .replace(/[’‘`]/g,"'")
-      .replace(/\s+/g,' ')
-      .toLowerCase().trim();
-    return norm(a) === norm(b);
-  }
-
-  function startFIB(){
+  // ---- FIB UI
+  function startFIB() {
     wrap.style.display = "none";
-    try { video.pause(); } catch(_){}
-    if (sceneText) sceneText.textContent = scene.text || "";
-
-    // Defensive: build sentence/blanks from "___" if not provided
-    if (!Array.isArray(scene.sentence) || !Array.isArray(scene.blanks)) {
-      const parts = String(scene.text || '').split('___');
-      const toks = []; const blanks = [];
-      const toWords = s => String(s).trim().split(/\s+/).filter(Boolean);
-      parts.forEach((seg, i) => {
-        if (seg) toks.push(...toWords(seg));
-        if (i < parts.length - 1) { blanks.push(toks.length); toks.push('___'); }
-      });
-      scene.sentence = Array.isArray(scene.sentence) ? scene.sentence : toks;
-      scene.blanks   = Array.isArray(scene.blanks)   ? scene.blanks   : blanks;
-    }
-    if (typeof scene.correct === 'string') scene.correct = [scene.correct];
+    try { video.pause(); } catch(_) {}
 
     const ui = document.createElement("div");
-    ui.id = "fill-blank-ui";
-    ui.style.cssText = "max-width:900px;margin:0 auto;";
+    ui.id = "vfb-ui";
+    ui.style.cssText = "max-width:900px;margin:0 auto;color:#eee";
     game.appendChild(ui);
 
-    ui.innerHTML = `
-      <p style="margin-bottom:10px;">Complete the sentence by dragging options into the blanks:</p>
-      <p id="fill-blank-sentence" style="font-size:1.1rem;line-height:1.6;margin-bottom:16px;"></p>
-      <div id="fill-blank-options" style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:8px;"></div>
-      <button id="check-fill-blank-answer" style="padding:8px 12px;border:none;border-radius:8px;background:#00ffff;color:#000;font-weight:700;cursor:pointer">Check Answer</button>
-      <div id="fill-blank-feedback" style="margin-top:10px;font-weight:700;"></div>
-    `;
+    const sentEl = document.createElement("p");
+    sentEl.id = "vfb-sentence";
+    sentEl.style.cssText = "font-size:1.2rem;line-height:1.5;margin-bottom:14px;";
+    ui.appendChild(sentEl);
 
-    const sentenceEl = ui.querySelector("#fill-blank-sentence");
-    const optionsEl  = ui.querySelector("#fill-blank-options");
-    const feedbackEl = ui.querySelector("#fill-blank-feedback");
+    const optsEl = document.createElement("div");
+    optsEl.id = "vfb-options";
+    optsEl.style.cssText = "margin-bottom:16px;display:flex;flex-wrap:wrap;gap:8px;";
+    ui.appendChild(optsEl);
 
-    // Render sentence with blanks
-    let html = "";
-    for (let i = 0; i < scene.sentence.length; i++) {
-      if (scene.blanks.includes(i)) {
-        html += `<span class="fill-blank-dropzone" data-index="${i}" style="
-          display:inline-block;min-width:90px;border-bottom:2px solid #00ffff;margin:0 4px;vertical-align:bottom;padding:4px 6px;background:#111;color:#0ff;border-radius:6px;"></span> `;
-      } else {
-        html += `<span style="margin:0 4px;">${scene.sentence[i]}</span> `;
-      }
+    const ctrl = document.createElement("div");
+    ctrl.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;";
+    ui.appendChild(ctrl);
+
+    const checkBtn = document.createElement("button");
+    checkBtn.textContent = "Check Answer";
+    checkBtn.style.cssText = "padding:8px 12px;border:none;border-radius:8px;background:#00ffff;color:#000;font-weight:700;cursor:pointer";
+    checkBtn.onmouseenter = () => (checkBtn.style.backgroundColor = "#00cccc");
+    checkBtn.onmouseleave = () => (checkBtn.style.backgroundColor = "#00ffff");
+    ctrl.appendChild(checkBtn);
+
+    const resetBtn = document.createElement("button");
+    resetBtn.textContent = "Reset";
+    resetBtn.style.cssText = "padding:8px 12px;border:none;border-radius:8px;background:#333;color:#eee;font-weight:700;cursor:pointer";
+    ctrl.appendChild(resetBtn);
+
+    const fb = document.createElement("div");
+    fb.id = "vfb-feedback";
+    fb.style.cssText = "margin-top:10px;font-weight:700;";
+    ui.appendChild(fb);
+
+    // Data prep — build sentence/blanks if not provided
+    const toWords = s => String(s||"").trim().split(/\s+/).filter(Boolean);
+    if (!Array.isArray(scene.sentence) || !Array.isArray(scene.blanks)) {
+      const parts = String(scene.text || "").split("___");
+      const toks = []; const blanks = [];
+      parts.forEach((seg, i) => {
+        if (seg) toks.push(...toWords(seg));
+        if (i < parts.length - 1) { blanks.push(toks.length); toks.push("___"); }
+      });
+      scene.sentence = scene.sentence || toks;
+      scene.blanks   = scene.blanks   || blanks;
     }
-    sentenceEl.innerHTML = html;
+
+    const sentence = Array.isArray(scene.sentence) ? scene.sentence.slice() : [];
+    const blanks   = Array.isArray(scene.blanks) ? scene.blanks.slice() : [];
+    const options  = Array.isArray(scene.options) ? scene.options.slice() : [];
+    const correct  = Array.isArray(scene.correct) ? scene.correct.slice()
+                    : (typeof scene.correct === "string" ? [scene.correct] : []);
+
+    // Render sentence with dropzones
+    function paintSentence() {
+      let html = "";
+      for (let i = 0; i < sentence.length; i++) {
+        if (blanks.includes(i)) {
+          html += `<span class="vfb-zone" data-idx="${i}" style="display:inline-block;min-width:86px;border-bottom:2px solid #00ffff;margin:0 4px;vertical-align:bottom;padding:4px 6px;background:#111"></span> `;
+        } else {
+          html += `<span style="margin:0 4px;">${sentence[i]}</span> `;
+        }
+      }
+      sentEl.innerHTML = html;
+    }
+    paintSentence();
 
     // Render options
-    optionsEl.innerHTML = "";
-    (scene.options || []).forEach(opt => {
-      const btn = document.createElement("button");
-      btn.textContent = opt;
-      btn.className = "fill-blank-option";
-      btn.style.cssText = "padding:6px 12px;border-radius:6px;border:2px solid #00ffff;background:#000;color:#0ff;font-weight:700;cursor:grab;user-select:none";
-      optionsEl.appendChild(btn);
-    });
-
-    // Enable drag/drop via SortableJS
-    const dropzones = sentenceEl.querySelectorAll(".fill-blank-dropzone");
-
-    // Clean any previous instances on this node
-    if (ui._sortableBlanks) { ui._sortableBlanks.forEach(s=>s.destroy()); ui._sortableBlanks=null; }
-    if (ui._sortableOptions) { ui._sortableOptions.destroy(); ui._sortableOptions=null; }
-
-    ui._sortableBlanks = Array.from(dropzones).map(zone => Sortable.create(zone, {
-      group: "videoFillBlank",
-      animation: 150,
-      sort: false,
-      onAdd: evt => {
-        const dragged = evt.item;
-        if (dragged.parentNode === optionsEl) dragged.parentNode.removeChild(dragged);
-        if (evt.to.children.length > 1) {
-          Array.from(evt.to.children).forEach(child => {
-            if (child !== dragged) { evt.to.removeChild(child); optionsEl.appendChild(child); }
-          });
-        }
-      },
-      onRemove: evt => { optionsEl.appendChild(evt.item); }
-    }));
-
-    try {
-      ui._sortableOptions = Sortable.create(optionsEl, { group: "videoFillBlank", animation: 150 });
-    } catch(e){ console.warn("Sortable create failed:", e); }
-
-    ui.querySelector("#check-fill-blank-answer").onclick = () => {
-      const userAnswers = [];
-      let allFilled = true;
-      dropzones.forEach(zone => {
-        if (zone.children.length === 1) userAnswers.push(zone.children[0].textContent.trim());
-        else allFilled = false;
+    function paintOptions() {
+      optsEl.innerHTML = "";
+      options.forEach(opt => {
+        const b = document.createElement("button");
+        b.textContent = opt;
+        b.className = "vfb-opt";
+        b.style.cssText = "padding:6px 12px;border-radius:6px;border:2px solid #00ffff;background:#000;color:#0ff;font-weight:700;cursor:grab;user-select:none";
+        optsEl.appendChild(b);
       });
+    }
+    paintOptions();
 
-      if (!allFilled) {
-        feedbackEl.textContent = "⚠️ Please fill all blanks.";
-        feedbackEl.style.color = "orange";
-        return;
-      }
+    // Enable drag/drop with Sortable
+    const zones = Array.from(sentEl.querySelectorAll(".vfb-zone"));
+    const sortZones = [];
+    zones.forEach(zone => {
+      try {
+        const srt = Sortable.create(zone, { group:"vfb", animation:150, sort:false,
+          onAdd: (evt) => {
+            const dragged = evt.item;
+            // ensure one token per zone
+            if (zone.children.length > 1) {
+              Array.from(zone.children).forEach((c,idx) => { if (idx>0) { optsEl.appendChild(c); } });
+            }
+          },
+          onRemove: (evt) => { optsEl.appendChild(evt.item); }
+        });
+        sortZones.push(srt);
+      } catch(e) { console.warn("Sortable missing?", e); }
+    });
+    let sortOpts;
+    try { sortOpts = Sortable.create(optsEl, { group:"vfb", animation:150 }); } catch(e){}
 
-      const ok = userAnswers.every((ans,i) => sameToken(ans, scene.correct[i]));
+    function sameToken(a,b){
+      const norm = s => String(s||"")
+        .replace(/[’']/g,"")        // ignore apostrophes
+        .replace(/\s+/g," ")
+        .toLowerCase().trim();
+      return norm(a) === norm(b);
+    }
+
+    checkBtn.onclick = () => {
+      const user = [];
+      let filled = true;
+      zones.forEach((zone, zi) => {
+        if (zone.children.length === 1) user.push(zone.children[0].textContent.trim());
+        else filled = false;
+      });
+      if (!filled) { fb.textContent = "⚠️ Please fill all blanks."; fb.style.color = "orange"; return; }
+
+      const ok = (user.length === correct.length) && user.every((t,i) => sameToken(t, correct[i]));
       if (ok) {
-        feedbackEl.textContent = "✅ Correct! Moving on...";
-        feedbackEl.style.color = "lightgreen";
-        setTimeout(() => { if (scene.next) loadScene(scene.next); }, 900);
+        fb.textContent = "✅ Correct! Moving on...";
+        fb.style.color = "lightgreen";
+        try { if (scene.tallyKey && typeof tallyAdd === 'function') tallyAdd(scene.tallyKey, scene.tallyWeight || 1); } catch(_){}
+        setTimeout(() => scene.next ? loadScene(scene.next) : console.warn("video-fill-in-the-blank: no next"), 900);
       } else {
-        feedbackEl.textContent = "❌ Not quite. Try again.";
-        feedbackEl.style.color = "salmon";
+        fb.textContent = "❌ Not quite. Try again.";
+        fb.style.color = "salmon";
       }
     };
 
-    regCleanup(() => { const ui = document.getElementById("fill-blank-ui"); if (ui) ui.remove(); });
+    resetBtn.onclick = () => {
+      zones.forEach(z => { Array.from(z.children).forEach(ch => optsEl.appendChild(ch)); });
+      paintOptions();
+      fb.textContent = "";
+    };
+
+    regCleanup(() => { const n = document.getElementById("vfb-ui"); if (n) n.remove(); });
   }
 
   regListener(video, "ended", startFIB);
 }
+
 
 // === Hangman loader (updated: no seepage, defensive keyboard cleanup) ===
 function loadHangmanScene(id) {
