@@ -3440,8 +3440,17 @@ function loadInteractionAudioMCScene(id) {
 
 
  
+// ─────────────────────────────────────────────────────────────────────────────
+// Mobile-safe VIDEO → MULTI QUESTION
+// ─────────────────────────────────────────────────────────────────────────────
 function loadVideoMultiQuestionScene(id) {
   const scene = scenes[id];
+
+  // 🔄 Optional cross-scene tally reset
+  if (scene?.tallyKey && scene.tallyReset) {
+    try { tallyReset(scene.tallyKey, scene.tallyMax ?? (scene.questions?.length || null)); } catch(_) {}
+  }
+
   if (!scene) { console.error(`Scene ${id} not found.`); return; }
 
   const VMQ_DEFAULT_SECONDS = 15; // fallback default
@@ -3459,25 +3468,57 @@ function loadVideoMultiQuestionScene(id) {
     .forEach(id => { const n = document.getElementById(id); if (n) n.remove(); });
 
   if (gameContainer) gameContainer.style.display = "block";
+  if (sceneText) { sceneText.style.display = "block"; sceneText.textContent = scene.text || ""; }
 
-  if (sceneText) {
-    sceneText.style.display = "block";
-    sceneText.textContent = scene.text || "";
-  }
+  // ── Video (mobile-safe)
+  const videoWrap = document.createElement("div");
+  videoWrap.style.cssText = "position:relative;max-width:100%;margin:0 auto 16px;";
 
-  // Video
   const videoElem = document.createElement("video");
   videoElem.id = "scene-video";
   videoElem.controls = true;
+  videoElem.preload = "metadata";
+  if (scene.poster) videoElem.poster = scene.poster;
   videoElem.src = scene.videoSrc;
-  videoElem.style.maxWidth = "100%";
-  videoElem.style.maxHeight = "360px";
-  videoElem.style.display = "block";
-  videoElem.style.margin = "0 auto 20px";
-  videoElem.style.borderRadius = "12px";
-  videoElem.style.backgroundColor = "black";
+  videoElem.style.cssText = "width:100%;height:auto;max-height:45vh;display:block;border-radius:12px;background:#000;";
+  // iOS inline playback
+  videoElem.setAttribute("playsinline", "");
+  videoElem.setAttribute("webkit-playsinline", "");
+  videoElem.playsInline = true;
+
+  // Tap-to-play overlay (required on iOS if unmuted)
+  const playOverlay = document.createElement("button");
+  playOverlay.textContent = "▶ Tap to Play";
+  playOverlay.style.cssText = "position:absolute;inset:auto 0 0 0;margin:auto;top:0;bottom:0;width:180px;height:48px;" +
+                              "background:#00ffff;color:#000;border:none;border-radius:10px;font-weight:700;cursor:pointer";
+  const hideOverlay = () => { if (playOverlay.parentNode) playOverlay.remove(); };
+
+  playOverlay.onclick = async () => {
+    try { await videoElem.play(); hideOverlay(); } catch(e) { console.warn("User play failed:", e); }
+  };
+
+  // On first user interaction with video controls, hide overlay
+  videoElem.addEventListener("play", hideOverlay);
+
+  // Fallback if the video errors (bad codec, etc.)
+  videoElem.addEventListener("error", () => {
+    hideOverlay();
+    const msg = document.createElement("div");
+    msg.style.cssText = "margin-top:8px;color:orange;font-weight:700";
+    msg.textContent = "⚠️ This device can’t play the video inline.";
+    const a = document.createElement("a");
+    a.href = scene.videoSrc;
+    a.target = "_blank";
+    a.textContent = "Open video in a new tab";
+    a.style.cssText = "display:inline-block;margin-left:8px;color:#0ff;text-decoration:underline";
+    msg.appendChild(a);
+    videoWrap.appendChild(msg);
+  });
+
+  videoWrap.appendChild(videoElem);
+  videoWrap.appendChild(playOverlay);
+  gameContainer.insertBefore(videoWrap, sceneText ? sceneText.nextSibling : null);
   regNode(videoElem);
-  gameContainer.insertBefore(videoElem, sceneText ? sceneText.nextSibling : null);
 
   // State
   const questions = Array.isArray(scene.questions) ? scene.questions : [];
@@ -3485,6 +3526,13 @@ function loadVideoMultiQuestionScene(id) {
   let score = 0;
   let timerInterval = null;
   let timeLeft = 0;
+
+  // Optional SKIP button (start questions without finishing the video)
+  const skipBtn = document.createElement("button");
+  skipBtn.textContent = "Skip video";
+  skipBtn.style.cssText = "margin-top:8px;padding:8px 12px;border:none;border-radius:8px;background:#222;color:#eee;cursor:pointer;font-weight:700";
+  skipBtn.onclick = () => onVideoEnded();
+  videoWrap.appendChild(skipBtn);
 
   function resolveTimerSeconds(scene, q) {
     const pick = (v) => {
@@ -3498,7 +3546,7 @@ function loadVideoMultiQuestionScene(id) {
     return (perQ != null) ? perQ : (perScene != null ? perScene : VMQ_DEFAULT_SECONDS);
   }
 
-  function clearTimer() { if (timerInterval) { clearInterval(timerInterval); timerInterval = null; } }
+  function clearTimer(){ if (timerInterval) { clearInterval(timerInterval); timerInterval = null; } }
 
   function cleanupQuestionUI() {
     ["video-multi-question-timer","video-multi-question-options","video-multi-question-feedback"]
@@ -3509,7 +3557,7 @@ function loadVideoMultiQuestionScene(id) {
   function finish() {
     cleanupQuestionUI();
     try { videoElem.pause(); } catch(_) {}
-    if (videoElem.parentNode) videoElem.remove();
+    if (videoWrap.parentNode) videoWrap.remove();
 
     if (scene.scoring && scene.endings) {
       const { high = Infinity, medium = -Infinity } = scene.scoring;
@@ -3548,7 +3596,8 @@ function loadVideoMultiQuestionScene(id) {
         if (timerDiv) timerDiv.textContent = `⏳ Time left: ${Math.max(0, timeLeft)}s`;
         if (timeLeft <= 0) {
           clearTimer();
-          feedback("⌛ Time expired. Moving on...", "orange", false, true);
+          try { if (scene.tallyKey && typeof tallyAdd === 'function') tallyAdd(scene.tallyKey, 0); } catch(_) {}
+          feedback("⏲️ Time's up. Moving on...", "orange", false, true);
         }
       }, 1000);
     }
@@ -3584,6 +3633,7 @@ function loadVideoMultiQuestionScene(id) {
       regListener(btn, "click", () => {
         const correctIndex = Number(q.correct);
         const ok = (i === correctIndex);
+        try { if (scene.tallyKey && typeof tallyAdd === 'function') tallyAdd(scene.tallyKey, ok ? (scene.tallyWeight || 1) : 0); } catch(_) {}
         feedback(ok ? "✅ Correct! Moving on..." : "❌ Not quite. Moving on...", ok ? "lightgreen" : "salmon", ok);
       });
       optionsDiv.appendChild(btn);
@@ -3591,16 +3641,200 @@ function loadVideoMultiQuestionScene(id) {
   }
 
   function onVideoEnded() {
-    videoElem.style.display = "none";
+    // Hide video panel, start questions
+    videoWrap.style.display = "none";
     if (sceneText) sceneText.textContent = "";
     qIndex = 0;
     score = 0;
     renderQuestion();
   }
 
-  videoElem.addEventListener("ended", onVideoEnded);
   regListener(videoElem, "ended", onVideoEnded);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mobile-safe VIDEO → MULTI *AUDIO* CHOICE (each option is an audio clip)
+// ─────────────────────────────────────────────────────────────────────────────
+function loadVideoMultiAudioChoiceScene(id) {
+  const scene = scenes[id];
+  if (!scene) { console.error(`Scene data not found for ID: ${id}`); return; }
+
+  const gameContainer = document.getElementById("game-container");
+  const sceneText = document.getElementById("scene-text");
+  const sceneImage = document.getElementById("scene-image");
+  const container = document.getElementById("scene-container");
+
+  [sceneImage, container].forEach(el => { if (el) { el.style.display = "none"; el.innerHTML = ""; } });
+  if (sceneText) { sceneText.style.display = "block"; sceneText.textContent = scene.text || ""; }
+  if (gameContainer) gameContainer.style.display = "block";
+
+  // Remove stale UI
+  const prevUI = document.getElementById("video-multi-audio-question-ui");
+  if (prevUI) prevUI.remove();
+  const oldVid = document.getElementById("scene-video");
+  if (oldVid) oldVid.remove();
+
+  // Video (mobile-safe)
+  const videoWrap = document.createElement("div");
+  videoWrap.style.cssText = "position:relative;max-width:100%;margin:0 auto 16px;";
+
+  const videoElem = document.createElement("video");
+  videoElem.id = "scene-video";
+  videoElem.controls = true;
+  videoElem.preload = "metadata";
+  if (scene.poster) videoElem.poster = scene.poster;
+  videoElem.src = scene.videoSrc;
+  videoElem.style.cssText = "width:100%;height:auto;max-height:45vh;display:block;border-radius:12px;background:#000;";
+  videoElem.setAttribute("playsinline", "");
+  videoElem.setAttribute("webkit-playsinline", "");
+  videoElem.playsInline = true;
+
+  const playOverlay = document.createElement("button");
+  playOverlay.textContent = "▶ Tap to Play";
+  playOverlay.style.cssText = "position:absolute;inset:auto 0 0 0;margin:auto;top:0;bottom:0;width:180px;height:48px;" +
+                              "background:#00ffff;color:#000;border:none;border-radius:10px;font-weight:700;cursor:pointer";
+  playOverlay.onclick = async () => {
+    try { await videoElem.play(); playOverlay.remove(); } catch(e) { console.warn("User play failed:", e); }
+  };
+  videoElem.addEventListener("play", () => playOverlay.remove());
+
+  videoElem.addEventListener("error", () => {
+    const msg = document.createElement("div");
+    msg.style.cssText = "margin-top:8px;color:orange;font-weight:700";
+    msg.textContent = "⚠️ This device can’t play the video inline.";
+    const a = document.createElement("a");
+    a.href = scene.videoSrc;
+    a.target = "_blank";
+    a.textContent = "Open video in a new tab";
+    a.style.cssText = "display:inline-block;margin-left:8px;color:#0ff;text-decoration:underline";
+    msg.appendChild(a);
+    videoWrap.appendChild(msg);
+  });
+
+  // Optional SKIP button
+  const skipBtn = document.createElement("button");
+  skipBtn.textContent = "Skip video";
+  skipBtn.style.cssText = "margin-top:8px;padding:8px 12px;border:none;border-radius:8px;background:#222;color:#eee;cursor:pointer;font-weight:700";
+  skipBtn.onclick = () => showQuestion();
+  videoWrap.appendChild(skipBtn);
+
+  videoWrap.appendChild(videoElem);
+  videoWrap.appendChild(playOverlay);
+  gameContainer.appendChild(videoWrap);
+
+  // Question UI (hidden until video ends or skip)
+  let questionUI = document.createElement("div");
+  questionUI.id = "video-multi-audio-question-ui";
+  questionUI.style.maxWidth = "700px";
+  questionUI.style.margin = "0 auto";
+  questionUI.style.color = "#eee";
+  questionUI.style.fontSize = "1.1rem";
+  questionUI.style.display = "none";
+  gameContainer.appendChild(questionUI);
+
+  let index = 0;
+  let score = 0;
+
+  function cleanupQuestionUI() {
+    questionUI.style.display = "none";
+    questionUI.innerHTML = "";
+  }
+
+  function finishBlock() {
+    cleanupQuestionUI();
+    try { videoElem.pause(); } catch(_) {}
+    if (videoWrap.parentNode) videoWrap.remove();
+
+    if (scene.scoring && scene.endings) {
+      let endingScene;
+      if (score >= scene.scoring.high) endingScene = scene.endings.high;
+      else if (score >= scene.scoring.medium) endingScene = scene.endings.medium;
+      else endingScene = scene.endings.low;
+      if (endingScene) return loadScene(endingScene);
+    }
+    if (scene.next) return loadScene(scene.next);
+    console.warn("video-multi-audio-choice: no next/endings specified.");
+  }
+
+  function showQuestion() {
+    // hide video area once questions start
+    videoWrap.style.display = "none";
+
+    if (index >= (scene.questions?.length || 0)) return finishBlock();
+
+    const question = scene.questions[index];
+    questionUI.style.display = "block";
+    questionUI.innerHTML = `
+      <p><strong>Question ${index + 1}:</strong> ${question.text || ""}</p>
+      <div id="audio-options-container" style="margin-top: 12px;"></div>
+      <div id="video-multi-audio-feedback" style="margin-top: 10px; font-weight: bold;"></div>
+    `;
+
+    const optionsContainer = document.getElementById("audio-options-container");
+    const feedbackDiv = document.getElementById("video-multi-audio-feedback");
+
+    optionsContainer.innerHTML = "";
+
+    (question.options || []).forEach((audioSrc, i) => {
+      const optionLabel = document.createElement("label");
+      optionLabel.style.display = "block";
+      optionLabel.style.marginBottom = "12px";
+      optionLabel.style.cursor = "pointer";
+
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "audio-choice";
+      radio.value = i;
+      radio.style.marginRight = "10px";
+
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.preload = "metadata";
+      audio.src = audioSrc;
+      audio.style.verticalAlign = "middle";
+
+      optionLabel.appendChild(radio);
+      optionLabel.appendChild(audio);
+      optionsContainer.appendChild(optionLabel);
+    });
+
+    // Submit button (fresh each q)
+    let submitBtn = document.getElementById("video-multi-audio-submit-btn");
+    if (submitBtn) submitBtn.remove();
+
+    submitBtn = document.createElement("button");
+    submitBtn.id = "video-multi-audio-submit-btn";
+    submitBtn.textContent = "Submit Answer";
+    submitBtn.style.cssText = "margin-top: 15px; padding: 8px 16px; font-weight: 700; background: #00ffff; border: none; border-radius: 8px; cursor: pointer";
+    submitBtn.onmouseover = () => (submitBtn.style.backgroundColor = "#00cccc");
+    submitBtn.onmouseout  = () => (submitBtn.style.backgroundColor = "#00ffff");
+    questionUI.appendChild(submitBtn);
+
+    submitBtn.onclick = () => {
+      const selected = document.querySelector('input[name="audio-choice"]:checked');
+      if (!selected) {
+        feedbackDiv.textContent = "⚠️ Please select an answer.";
+        feedbackDiv.style.color = "orange";
+        return;
+      }
+      const answerIndex = parseInt(selected.value, 10);
+      if (answerIndex === question.correct) {
+        score++;
+        feedbackDiv.textContent = "✅ Correct! Moving on...";
+        feedbackDiv.style.color = "lightgreen";
+      } else {
+        feedbackDiv.textContent = "❌ Not quite. Moving on...";
+        feedbackDiv.style.color = "salmon";
+      }
+      submitBtn.disabled = true;
+      setTimeout(() => { index++; showQuestion(); }, 900);
+    };
+  }
+
+  // Start questions after video ends (or on Skip)
+  videoElem.addEventListener("ended", showQuestion);
+}
+
 
 
 
@@ -3950,76 +4184,189 @@ function loadVideoScrambleScene(id) {
 // --- Video → Fill-in-the-Blank loader ---
 function loadVideoFillBlankScene(id) {
   const scene = scenes[id];
-  if (!scene) {
-    console.error(`Scene data not found for ID: ${id}`);
-    return;
-  }
+  if (!scene) { console.error(`Scene ${id} not found.`); return; }
 
-  // Containers
-  const gameContainer = document.getElementById("game-container");
+  const regNode     = window.registerNode     || function(){};
+  const regListener = window.registerListener || function(t,e,h){ t.addEventListener(e,h); };
+  const regCleanup  = window.registerCleanup  || function(){};
+
+  const game = document.getElementById("game-container");
   const sceneText = document.getElementById("scene-text");
-  const sceneImage = document.getElementById("scene-image");
-  const infoDiv = document.getElementById("challenge-info");
-  const fillBlankContainer = document.getElementById("sceneFillInTheBlank");
+  if (game) game.style.display = "block";
+  if (sceneText) { sceneText.style.display = "block"; sceneText.textContent = scene.text || ""; }
 
-  if (gameContainer) gameContainer.style.display = "block";
+  // Clear prior UI
+  ["video-fillblank-wrap","fill-blank-ui","scene-video"].forEach(id => { const n = document.getElementById(id); if (n) n.remove(); });
 
-  // Hide unrelated bits, keep text visible for instructions
-  [sceneImage, infoDiv].forEach(el => {
-    if (el) { el.style.display = "none"; el.innerHTML = ""; }
-  });
+  // Video wrapper
+  const wrap = document.createElement("div");
+  wrap.id = "video-fillblank-wrap";
+  wrap.style.cssText = "position:relative;max-width:100%;margin:0 auto 16px;";
+  game.appendChild(wrap);
 
-  if (sceneText) {
-    if (scene.text) {
-      sceneText.style.display = "block";
-      sceneText.textContent = scene.text;
-    } else {
-      sceneText.style.display = "none";
-      sceneText.innerHTML = "";
-    }
-  }
+  const video = document.createElement("video");
+  video.id = "scene-video";
+  video.controls = true;
+  video.preload = "metadata";
+  if (scene.poster) video.poster = scene.poster;
+  video.src = scene.videoSrc;
+  video.style.cssText = "width:100%;height:auto;max-height:45vh;display:block;border-radius:12px;background:#000;";
+  video.setAttribute("playsinline", "");
+  video.setAttribute("webkit-playsinline", "");
+  video.playsInline = true;
+  regNode(video);
 
-  // Hide/clear fill blank area until video ends
-  if (fillBlankContainer) {
-    fillBlankContainer.style.display = "none";
-    fillBlankContainer.innerHTML = "";
-  }
+  const overlay = document.createElement("button");
+  overlay.textContent = "▶ Tap to Play";
+  overlay.style.cssText = "position:absolute;inset:auto 0 0 0;margin:auto;top:0;bottom:0;width:180px;height:48px;" +
+                          "background:#00ffff;color:#000;border:none;border-radius:10px;font-weight:700;cursor:pointer";
+  overlay.onclick = async () => { try { await video.play(); overlay.remove(); } catch(e){} };
+  video.addEventListener("play", () => { if (overlay.parentNode) overlay.remove(); });
 
-  // Clean any previous video
-  let videoElem = document.getElementById("scene-video");
-  if (videoElem) {
-    videoElem.pause();
-    videoElem.src = "";
-    videoElem.load();
-    videoElem.remove();
-  }
+  const skipBtn = document.createElement("button");
+  skipBtn.textContent = "Skip video";
+  skipBtn.style.cssText = "margin-top:8px;padding:8px 12px;border:none;border-radius:8px;background:#222;color:#eee;cursor:pointer;font-weight:700";
+  skipBtn.onclick = () => startFIB();
 
-  // Build video
-  videoElem = document.createElement("video");
-  videoElem.id = "scene-video";
-  videoElem.src = scene.videoSrc;
-  videoElem.controls = true;
-  videoElem.style.maxWidth = "100%";
-  videoElem.style.maxHeight = "360px";
-  videoElem.style.display = "block";
-  videoElem.style.margin = "0 auto 20px";
-  videoElem.style.borderRadius = "12px";
-  videoElem.style.backgroundColor = "black";
-
-  // Insert video just after the text block if possible
-  if (sceneText && sceneText.parentNode) {
-    sceneText.parentNode.insertBefore(videoElem, sceneText.nextSibling);
-  } else {
-    gameContainer.appendChild(videoElem);
-  }
-
-  // After video ends, render the standard fill-in-the-blank UI for THIS SAME SCENE
-  videoElem.onended = () => {
-    if (fillBlankContainer) {
-      fillBlankContainer.style.display = "block";
-      loadFillInTheBlankScene(id, fillBlankContainer);
-    }
+  const errorMsg = () => {
+    const msg = document.createElement("div");
+    msg.style.cssText = "margin-top:8px;color:orange;font-weight:700";
+    msg.textContent = "⚠️ This device can’t play the video inline.";
+    const a = document.createElement("a");
+    a.href = scene.videoSrc; a.target = "_blank";
+    a.textContent = "Open video in a new tab";
+    a.style.cssText = "display:inline-block;margin-left:8px;color:#0ff;text-decoration:underline";
+    msg.appendChild(a);
+    wrap.appendChild(msg);
   };
+  video.addEventListener("error", errorMsg);
+
+  wrap.appendChild(video);
+  wrap.appendChild(overlay);
+  wrap.appendChild(skipBtn);
+
+  function sameToken(a,b){
+    const norm = s => String(s||'')
+      .replace(/[’‘`]/g,"'")
+      .replace(/\s+/g,' ')
+      .toLowerCase().trim();
+    return norm(a) === norm(b);
+  }
+
+  function startFIB(){
+    wrap.style.display = "none";
+    try { video.pause(); } catch(_){}
+    if (sceneText) sceneText.textContent = scene.text || "";
+
+    // Defensive: build sentence/blanks from "___" if not provided
+    if (!Array.isArray(scene.sentence) || !Array.isArray(scene.blanks)) {
+      const parts = String(scene.text || '').split('___');
+      const toks = []; const blanks = [];
+      const toWords = s => String(s).trim().split(/\s+/).filter(Boolean);
+      parts.forEach((seg, i) => {
+        if (seg) toks.push(...toWords(seg));
+        if (i < parts.length - 1) { blanks.push(toks.length); toks.push('___'); }
+      });
+      scene.sentence = Array.isArray(scene.sentence) ? scene.sentence : toks;
+      scene.blanks   = Array.isArray(scene.blanks)   ? scene.blanks   : blanks;
+    }
+    if (typeof scene.correct === 'string') scene.correct = [scene.correct];
+
+    const ui = document.createElement("div");
+    ui.id = "fill-blank-ui";
+    ui.style.cssText = "max-width:900px;margin:0 auto;";
+    game.appendChild(ui);
+
+    ui.innerHTML = `
+      <p style="margin-bottom:10px;">Complete the sentence by dragging options into the blanks:</p>
+      <p id="fill-blank-sentence" style="font-size:1.1rem;line-height:1.6;margin-bottom:16px;"></p>
+      <div id="fill-blank-options" style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:8px;"></div>
+      <button id="check-fill-blank-answer" style="padding:8px 12px;border:none;border-radius:8px;background:#00ffff;color:#000;font-weight:700;cursor:pointer">Check Answer</button>
+      <div id="fill-blank-feedback" style="margin-top:10px;font-weight:700;"></div>
+    `;
+
+    const sentenceEl = ui.querySelector("#fill-blank-sentence");
+    const optionsEl  = ui.querySelector("#fill-blank-options");
+    const feedbackEl = ui.querySelector("#fill-blank-feedback");
+
+    // Render sentence with blanks
+    let html = "";
+    for (let i = 0; i < scene.sentence.length; i++) {
+      if (scene.blanks.includes(i)) {
+        html += `<span class="fill-blank-dropzone" data-index="${i}" style="
+          display:inline-block;min-width:90px;border-bottom:2px solid #00ffff;margin:0 4px;vertical-align:bottom;padding:4px 6px;background:#111;color:#0ff;border-radius:6px;"></span> `;
+      } else {
+        html += `<span style="margin:0 4px;">${scene.sentence[i]}</span> `;
+      }
+    }
+    sentenceEl.innerHTML = html;
+
+    // Render options
+    optionsEl.innerHTML = "";
+    (scene.options || []).forEach(opt => {
+      const btn = document.createElement("button");
+      btn.textContent = opt;
+      btn.className = "fill-blank-option";
+      btn.style.cssText = "padding:6px 12px;border-radius:6px;border:2px solid #00ffff;background:#000;color:#0ff;font-weight:700;cursor:grab;user-select:none";
+      optionsEl.appendChild(btn);
+    });
+
+    // Enable drag/drop via SortableJS
+    const dropzones = sentenceEl.querySelectorAll(".fill-blank-dropzone");
+
+    // Clean any previous instances on this node
+    if (ui._sortableBlanks) { ui._sortableBlanks.forEach(s=>s.destroy()); ui._sortableBlanks=null; }
+    if (ui._sortableOptions) { ui._sortableOptions.destroy(); ui._sortableOptions=null; }
+
+    ui._sortableBlanks = Array.from(dropzones).map(zone => Sortable.create(zone, {
+      group: "videoFillBlank",
+      animation: 150,
+      sort: false,
+      onAdd: evt => {
+        const dragged = evt.item;
+        if (dragged.parentNode === optionsEl) dragged.parentNode.removeChild(dragged);
+        if (evt.to.children.length > 1) {
+          Array.from(evt.to.children).forEach(child => {
+            if (child !== dragged) { evt.to.removeChild(child); optionsEl.appendChild(child); }
+          });
+        }
+      },
+      onRemove: evt => { optionsEl.appendChild(evt.item); }
+    }));
+
+    try {
+      ui._sortableOptions = Sortable.create(optionsEl, { group: "videoFillBlank", animation: 150 });
+    } catch(e){ console.warn("Sortable create failed:", e); }
+
+    ui.querySelector("#check-fill-blank-answer").onclick = () => {
+      const userAnswers = [];
+      let allFilled = true;
+      dropzones.forEach(zone => {
+        if (zone.children.length === 1) userAnswers.push(zone.children[0].textContent.trim());
+        else allFilled = false;
+      });
+
+      if (!allFilled) {
+        feedbackEl.textContent = "⚠️ Please fill all blanks.";
+        feedbackEl.style.color = "orange";
+        return;
+      }
+
+      const ok = userAnswers.every((ans,i) => sameToken(ans, scene.correct[i]));
+      if (ok) {
+        feedbackEl.textContent = "✅ Correct! Moving on...";
+        feedbackEl.style.color = "lightgreen";
+        setTimeout(() => { if (scene.next) loadScene(scene.next); }, 900);
+      } else {
+        feedbackEl.textContent = "❌ Not quite. Try again.";
+        feedbackEl.style.color = "salmon";
+      }
+    };
+
+    regCleanup(() => { const ui = document.getElementById("fill-blank-ui"); if (ui) ui.remove(); });
+  }
+
+  regListener(video, "ended", startFIB);
 }
 
 // === Hangman loader (updated: no seepage, defensive keyboard cleanup) ===
