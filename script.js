@@ -1464,6 +1464,7 @@ function listAssetsForScene(sc){
   const imgs = new Set(), auds = new Set(), vids = new Set();
   if (!sc || typeof sc !== 'object') return {imgs,auds,vids};
   if (sc.image) imgs.add(sc.image);
+  if (sc.poster) imgs.add(sc.poster); // ✅ preload video poster too
   if (Array.isArray(sc.images)) sc.images.forEach(x=>imgs.add(x));
   if (sc.audio) auds.add(sc.audio);
   if (Array.isArray(sc.interactions)) sc.interactions.forEach(it=>{
@@ -1477,12 +1478,49 @@ function listAssetsForScene(sc){
 }
 const __preloaded = new Set();
 function preloadAssetsFor(id){
-  const sc = (window.scenes||{})[id]; if (!sc) return;
+  const sc = (window.scenes||{})[id];
+  if (!sc) return;
+
   const {imgs,auds,vids} = listAssetsForScene(sc);
-  imgs.forEach(src=>{ if (__preloaded.has(src)) return; const i=new Image(); i.src=src; __preloaded.add(src); });
-  auds.forEach(src=>{ if (__preloaded.has(src)) return; const a=new Audio(); a.preload='auto'; a.src=src; __preloaded.add(src); });
-  vids.forEach(src=>{ if (__preloaded.has(src)) return; const v=document.createElement('video'); v.preload='metadata'; v.src=src; __preloaded.add(src); });
+
+  imgs.forEach(src => {
+    if (!src) return;
+    const url = resolveSrc(src);
+    if (__preloaded.has(url)) return;
+    const i = new Image();
+    // small wins for faster decode
+    i.decoding = 'async';
+    i.loading  = 'eager';
+    i.src = url;
+    __preloaded.add(url);
+  });
+
+  auds.forEach(src => {
+    if (!src) return;
+    const url = resolveSrc(src);
+    if (__preloaded.has(url)) return;
+    const a = document.createElement('audio');
+    a.preload = 'auto';
+    a.src = url;
+    try { a.load(); } catch(_) {}
+    __preloaded.add(url);
+  });
+
+  vids.forEach(src => {
+    if (!src) return;
+    const url = resolveSrc(src);
+    if (__preloaded.has(url)) return;
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.setAttribute('playsinline','');
+    v.setAttribute('webkit-playsinline','');
+    v.playsInline = true;
+    v.src = url;
+    try { v.load(); } catch(_) {}
+    __preloaded.add(url);
+  });
 }
+
 
 // 4) Safe start: clean data → validate → preload → start or show errors
 (function safeBootstrap(){
@@ -2655,17 +2693,26 @@ function loadVideoScene(sceneId) {
   }
 
   // Build inline-safe video
-  const video = document.createElement("video");
-  video.id = "scene-video";
-  video.controls = true;
-  video.preload = "metadata";
-  if (scene.poster) video.poster = resolveSrc(scene.poster);
-  video.setAttribute("playsinline", "");
-  video.setAttribute("webkit-playsinline", "");
-  video.playsInline = true;
-  video.style.maxWidth = "100%";
-  video.style.height = "auto";
-  video.src = resolveSrc(scene.videoSrc); // <— safer than innerHTML+<source>
+// Build video (resolved URL + inline-safe)
+const video = document.createElement("video");
+video.id = "scene-video";
+video.controls = true;
+video.preload = "metadata";
+video.style.maxWidth = "100%";
+video.style.height = "auto";
+
+// iOS / mobile inline playback
+video.setAttribute("playsinline", "");
+video.setAttribute("webkit-playsinline", "");
+video.playsInline = true;
+
+// ✅ resolve URLs against <base> / Pages path
+video.src = resolveSrc(scene.videoSrc);
+if (scene.poster) video.poster = resolveSrc(scene.poster);
+
+// (optional: tiny error logger while testing)
+// video.addEventListener("error", () => console.log("VIDEO ERROR code=", video.error && video.error.code));
+
 
   // Simple error fallback (matches your other loaders’ UX)
   video.addEventListener("error", () => {
@@ -3478,16 +3525,26 @@ function loadVideoMultiQuestionScene(id) {
   wrap.style.cssText = "position:relative;max-width:100%;margin:0 auto 16px;";
   game.appendChild(wrap);
 
-  const video = document.createElement("video");
-  video.id = "scene-video";
-  video.controls = true;
-  video.preload = "metadata";
-  if (scene.poster) video.poster = scene.poster;
-  video.src = scene.videoSrc;
-  video.style.cssText = "width:100%;height:auto;max-height:45vh;display:block;border-radius:12px;background:#000;";
-  video.setAttribute("playsinline", "");
-  video.setAttribute("webkit-playsinline", "");
-  video.playsInline = true;
+const video = document.createElement("video");
+video.id = "scene-video";
+video.controls = true;
+video.preload = "metadata";
+
+// ✅ resolve URLs so GitHub Pages + <base> work
+video.src = resolveSrc(scene.videoSrc);
+if (scene.poster) video.poster = resolveSrc(scene.poster);
+
+// inline-friendly on iOS/mobile
+video.style.cssText = "width:100%;height:auto;max-height:45vh;display:block;border-radius:12px;background:#000;";
+video.setAttribute("playsinline", "");
+video.setAttribute("webkit-playsinline", "");
+video.playsInline = true;
+
+regNode(video);
+
+// (optional while testing)
+// video.addEventListener("error", () => console.log("VMQ video error =", video.error && video.error.code), { once:true });
+
   regNode(video);
 
   const overlay = document.createElement("button");
@@ -3506,7 +3563,8 @@ function loadVideoMultiQuestionScene(id) {
     msg.style.cssText = "margin-top:8px;color:orange;font-weight:700";
     msg.textContent = "⚠️ This device can’t play the video inline.";
     const a = document.createElement("a");
-    a.href = scene.videoSrc; a.target = "_blank";
+    a.href = resolveSrc(scene.videoSrc);
+    a.target = "_blank";
     a.textContent = "Open video in a new tab";
     a.style.cssText = "display:inline-block;margin-left:8px;color:#0ff;text-decoration:underline";
     msg.appendChild(a);
@@ -3671,8 +3729,8 @@ function loadVideoMultiAudioChoiceScene(id) {
   videoElem.id = "scene-video";
   videoElem.controls = true;
   videoElem.preload = "metadata";
-  if (scene.poster) videoElem.poster = scene.poster;
-  videoElem.src = scene.videoSrc;
+  videoElem.src = resolveSrc(scene.videoSrc);
+  if (scene.poster) videoElem.poster = resolveSrc(scene.poster);
   videoElem.style.cssText = "width:100%;height:auto;max-height:45vh;display:block;border-radius:12px;background:#000;";
   videoElem.setAttribute("playsinline", "");
   videoElem.setAttribute("webkit-playsinline", "");
@@ -3692,7 +3750,7 @@ function loadVideoMultiAudioChoiceScene(id) {
     msg.style.cssText = "margin-top:8px;color:orange;font-weight:700";
     msg.textContent = "⚠️ This device can’t play the video inline.";
     const a = document.createElement("a");
-    a.href = scene.videoSrc;
+    a.href = resolveSrc(scene.videoSrc);
     a.target = "_blank";
     a.textContent = "Open video in a new tab";
     a.style.cssText = "display:inline-block;margin-left:8px;color:#0ff;text-decoration:underline";
@@ -3779,7 +3837,7 @@ function loadVideoMultiAudioChoiceScene(id) {
       const audio = document.createElement("audio");
       audio.controls = true;
       audio.preload = "metadata";
-      audio.src = audioSrc;
+      audio.src = resolveSrc(audioSrc);
       audio.style.verticalAlign = "middle";
 
       optionLabel.appendChild(radio);
@@ -3823,7 +3881,128 @@ function loadVideoMultiAudioChoiceScene(id) {
   // Start questions after video ends (or on Skip)
   videoElem.addEventListener("ended", showQuestion);
 }
+// ─────────────────────────────────────────────────────────────────────────────
+// Video → Scramble scene (inline-safe + GitHub Pages-safe URLs)
+// ─────────────────────────────────────────────────────────────────────────────
+function loadVideoScrambleScene(id) {
+  const scene = scenes[id];
+  if (!scene) { console.error(`Scene ${id} not found.`); return; }
 
+  const gameContainer = document.getElementById("game-container");
+  const sceneText     = document.getElementById("scene-text");
+  const sceneImage    = document.getElementById("scene-image");
+  const infoDiv       = document.getElementById("challenge-info");
+  const scrambleDiv   = document.getElementById("sentence-scramble");
+  const feedbackDiv   = document.getElementById("scramble-feedback");
+
+  // Hide unrelated UI; show instructions if provided
+  [sceneImage, infoDiv].forEach(el => { if (el) { el.style.display = "none"; el.innerHTML = ""; } });
+  if (gameContainer) gameContainer.style.display = "block";
+  if (sceneText) {
+    if (scene.text) { sceneText.style.display = "block"; sceneText.textContent = scene.text; }
+    else { sceneText.style.display = "none"; sceneText.innerHTML = ""; }
+  }
+
+  // Clear any previous video
+  let old = document.getElementById("scene-video");
+  if (old) { try { old.pause(); } catch(_){} old.src = ""; old.load(); old.remove(); }
+
+  // Build video (resolved URL + inline-safe)
+  const videoElem = document.createElement("video");
+  videoElem.id = "scene-video";
+  videoElem.controls = true;
+  videoElem.preload  = "metadata";
+  videoElem.setAttribute("playsinline", "");
+  videoElem.setAttribute("webkit-playsinline", "");
+  videoElem.playsInline = true;
+  videoElem.src = resolveSrc(scene.videoSrc);
+  if (scene.poster) videoElem.poster = resolveSrc(scene.poster);
+  videoElem.style.cssText = "max-width:100%;max-height:360px;display:block;margin:0 auto 20px;border-radius:12px;background:#000;";
+
+  // Graceful fallback if inline playback fails
+  videoElem.addEventListener("error", () => {
+    const msg = document.createElement("div");
+    msg.style.cssText = "margin-top:8px;color:orange;font-weight:700;text-align:center";
+    msg.textContent = "⚠️ This device can’t play the video inline.";
+    const a = document.createElement("a");
+    a.href = resolveSrc(scene.videoSrc);
+    a.target = "_blank";
+    a.textContent = "Open video in a new tab";
+    a.style.cssText = "margin-left:8px;color:#0ff;text-decoration:underline";
+    msg.appendChild(a);
+    gameContainer.appendChild(msg);
+  }, { once:true });
+
+  // Insert video into DOM
+  if (sceneText && sceneText.parentNode) {
+    sceneText.parentNode.insertBefore(videoElem, sceneText.nextSibling);
+  } else {
+    gameContainer.appendChild(videoElem);
+  }
+
+  // After video ends, show scramble UI
+  videoElem.onended = () => {
+    if (!scrambleDiv || !feedbackDiv) return;
+
+    scrambleDiv.style.display = "block";
+    feedbackDiv.style.display = "block";
+    scrambleDiv.innerHTML = "";
+    feedbackDiv.textContent = "";
+
+    // Instruction
+    const instruction = document.createElement("p");
+    instruction.className = "scramble-instructions";
+    instruction.textContent = "🧩 Drag the words into the correct order:";
+    scrambleDiv.appendChild(instruction);
+
+    // Scramble container
+    const scrambleContainer = document.createElement("div");
+    scrambleContainer.id = "scramble-words";
+    const source = Array.isArray(scene.scramble) ? scene.scramble.slice() : [];
+    const shuffled = shuffleArray(source);
+    shuffled.forEach(token => {
+      const span = document.createElement("span");
+      span.className = "scramble-word";
+      span.textContent = token;
+      scrambleContainer.appendChild(span);
+    });
+    scrambleDiv.appendChild(scrambleContainer);
+
+    // Enable drag/drop
+    try {
+      if (window.scrambleSortable && typeof window.scrambleSortable.destroy === "function") {
+        window.scrambleSortable.destroy();
+      }
+      window.scrambleSortable = Sortable.create(scrambleContainer, { animation: 150 });
+    } catch (e) { console.warn("Sortable unavailable; drag disabled.", e); }
+
+    // Check button
+    const checkBtn = document.createElement("button");
+    checkBtn.textContent = "Check Answer";
+    checkBtn.style.marginTop = "15px";
+    scrambleDiv.appendChild(checkBtn);
+
+    checkBtn.onclick = () => {
+      const words = Array.from(document.querySelectorAll("#scramble-words .scramble-word"));
+      const userOrder = words.map(w => w.textContent.trim());
+      const correctArr = Array.isArray(scene.correct)
+        ? scene.correct
+        : (typeof scene.correct === "string" ? scene.correct.trim().split(/\s+/) : []);
+
+      if (arraysEqual(userOrder, correctArr)) {
+        feedbackDiv.textContent = "✅ Correct! Moving on...";
+        feedbackDiv.style.color = "lightgreen";
+        if (Array.isArray(scene.unlockScenes)) scene.unlockScenes.forEach(unlockScene);
+        if (Array.isArray(scene.setFlags))     scene.setFlags.forEach(setFlag);
+        setTimeout(() => { if (scene.next) loadScene(scene.next); }, 1200);
+      } else {
+        feedbackDiv.textContent = "❌ Not quite. Try again.";
+        feedbackDiv.style.color = "salmon";
+      }
+    };
+  };
+}
+ 
 
 
 
@@ -3857,8 +4036,8 @@ function loadVideoFillBlankScene(id) {
   video.id = "scene-video";
   video.controls = true;
   video.preload = "metadata";
-  if (scene.poster) video.poster = scene.poster;
-  video.src = scene.videoSrc;
+  if (scene.poster) video.poster = resolveSrc(scene.poster);
+  video.src = resolveSrc(scene.videoSrc);
   video.style.cssText = "width:100%;height:auto;max-height:45vh;display:block;border-radius:12px;background:#000;";
   video.setAttribute("playsinline", "");
   video.setAttribute("webkit-playsinline", "");
@@ -3881,7 +4060,7 @@ function loadVideoFillBlankScene(id) {
     msg.style.cssText = "margin-top:8px;color:orange;font-weight:700";
     msg.textContent = "⚠️ This device can’t play the video inline.";
     const a = document.createElement("a");
-    a.href = scene.videoSrc; a.target = "_blank";
+    a.href = resolveSrc(scene.videoSrc);
     a.textContent = "Open video in a new tab";
     a.style.cssText = "display:inline-block;margin-left:8px;color:#0ff;text-decoration:underline";
     msg.appendChild(a);
