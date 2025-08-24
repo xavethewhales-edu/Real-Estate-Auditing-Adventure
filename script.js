@@ -1053,6 +1053,46 @@ scene36_thank_you: {
 // ✅ Step A: make scenes available globally
 window.scenes = scenes;
 
+// === GitHub Pages asset fixer ===
+// Put AFTER: window.scenes = scenes;
+(function fixAssetPathsForPages(){
+  const isPages = /github\.io$/.test(location.hostname);
+  // If you host at https://user.github.io/repo/, PREFIX becomes "/repo/"
+  const prefix = isPages
+    ? (location.pathname.replace(/\/index\.html?$/,'').replace(/\/$/,'') + '/')
+    : '';
+
+  function add(p){
+    if (!p) return p;
+    // leave external/relative/data URIs alone
+    if (/^(https?:|data:|\.{1,2}\/)/i.test(p)) return p;
+    // strip leading slash so "/images/x.png" becomes "images/x.png"
+    const clean = p.replace(/^\//,'');
+    return prefix + clean;
+  }
+
+  const A = (arr, fn) => Array.isArray(arr) ? arr.map(fn) : arr;
+
+  (Object.values(window.scenes || {})).forEach(sc => {
+    if (!sc || typeof sc !== 'object') return;
+    if (sc.image) sc.image = add(sc.image);
+    if (Array.isArray(sc.images)) sc.images = sc.images.map(add);
+    if (sc.audio) sc.audio = add(sc.audio);
+    if (sc.videoSrc) sc.videoSrc = add(sc.videoSrc);
+
+    if (Array.isArray(sc.options)) {
+      sc.options = sc.options.map(o => (typeof o === 'string' && /\.(mp3|wav|ogg|m4a|mp4)$/i.test(o)) ? add(o) : o);
+    }
+    if (Array.isArray(sc.interactions)) {
+      sc.interactions.forEach(it => {
+        if (it.audio) it.audio = add(it.audio);
+        if (Array.isArray(it.options)) {
+          it.options = it.options.map(o => (typeof o === 'string' && /\.(mp3|wav|ogg|m4a)$/i.test(o)) ? add(o) : o);
+        }
+      });
+    }
+  });
+})();
 
 
 
