@@ -1079,6 +1079,8 @@ window.scenes = scenes;
     if (Array.isArray(sc.images)) sc.images = sc.images.map(add);
     if (sc.audio) sc.audio = add(sc.audio);
     if (sc.videoSrc) sc.videoSrc = add(sc.videoSrc);
+    if (sc.poster) sc.poster = add(sc.poster);
+
 
     if (Array.isArray(sc.options)) {
       sc.options = sc.options.map(o => (typeof o === 'string' && /\.(mp3|wav|ogg|m4a|mp4)$/i.test(o)) ? add(o) : o);
@@ -1093,6 +1095,13 @@ window.scenes = scenes;
     }
   });
 })();
+
+// Resolve relative assets against <base> reliably
+function resolveSrc(p){
+  try { return new URL(p, document.baseURI).href; }
+  catch { return p || ''; }
+}
+
 
 
 
@@ -2631,13 +2640,11 @@ function loadVideoScene(sceneId) {
 
   const gameContainer = document.getElementById("game-container");
   const sceneText = document.getElementById("scene-text");
-
   if (gameContainer) gameContainer.style.display = "block";
 
-  // Keep your standard containers; just manage the video + question UI
   // Clean any previous video/question UI
   const oldVideo = document.getElementById("scene-video");
-  if (oldVideo) { oldVideo.pause(); oldVideo.src = ""; oldVideo.load(); oldVideo.remove(); }
+  if (oldVideo) { try{ oldVideo.pause(); }catch{} oldVideo.src = ""; oldVideo.load(); oldVideo.remove(); }
   const oldQ = document.getElementById("video-question");
   if (oldQ) oldQ.remove();
 
@@ -2647,13 +2654,32 @@ function loadVideoScene(sceneId) {
     sceneText.textContent = scene.text || "";
   }
 
-  // Build video
+  // Build inline-safe video
   const video = document.createElement("video");
   video.id = "scene-video";
   video.controls = true;
+  video.preload = "metadata";
+  if (scene.poster) video.poster = resolveSrc(scene.poster);
+  video.setAttribute("playsinline", "");
+  video.setAttribute("webkit-playsinline", "");
+  video.playsInline = true;
   video.style.maxWidth = "100%";
   video.style.height = "auto";
-  video.innerHTML = `<source src="${scene.videoSrc}" type="video/mp4" />Your browser does not support the video tag.`;
+  video.src = resolveSrc(scene.videoSrc); // <— safer than innerHTML+<source>
+
+  // Simple error fallback (matches your other loaders’ UX)
+  video.addEventListener("error", () => {
+    const msg = document.createElement("div");
+    msg.style.cssText = "margin-top:8px;color:orange;font-weight:700";
+    msg.textContent = "⚠️ This device can’t play the video inline.";
+    const a = document.createElement("a");
+    a.href = resolveSrc(scene.videoSrc);
+    a.target = "_blank";
+    a.textContent = "Open video in a new tab";
+    a.style.cssText = "display:inline-block;margin-left:8px;color:#0ff;text-decoration:underline";
+    msg.appendChild(a);
+    (sceneText?.parentNode || gameContainer).appendChild(msg);
+  });
 
   // Insert video after sceneText if possible
   if (sceneText && sceneText.parentNode) {
@@ -2661,72 +2687,8 @@ function loadVideoScene(sceneId) {
   } else {
     gameContainer.appendChild(video);
   }
-
-  // Build question UI (hidden initially)
-  const q = document.createElement("div");
-  q.id = "video-question";
-  q.style.marginTop = "20px";
-  q.style.display = "none";
-  q.innerHTML = `
-    <p>${scene.question || "Watch the video and answer the question below."}</p>
-    <div id="video-options"></div>
-    <div id="video-feedback" style="margin-top:10px;font-weight:bold;"></div>
-    <button id="check-video-answer" disabled>Check Answer</button>
-  `;
-  gameContainer.appendChild(q);
-
-  const optionsDiv = q.querySelector("#video-options");
-  const feedbackDiv = q.querySelector("#video-feedback");
-  const checkBtn = q.querySelector("#check-video-answer");
-
-  video.onended = () => {
-    q.style.display = "block";
-    optionsDiv.innerHTML = "";
-    scene.options.forEach((opt, i) => {
-      const label = document.createElement("label");
-      label.style.display = "block";
-      label.style.marginBottom = "8px";
-
-      const radio = document.createElement("input");
-      radio.type = "radio";
-      radio.name = "video-answer";
-      radio.value = i;
-      radio.addEventListener("change", () => {
-        checkBtn.disabled = false;
-        feedbackDiv.textContent = "";
-      });
-
-      label.appendChild(radio);
-      label.appendChild(document.createTextNode(" " + opt));
-      optionsDiv.appendChild(label);
-    });
-  };
-
-  checkBtn.onclick = () => {
-    const selected = q.querySelector('input[name="video-answer"]:checked');
-    if (!selected) {
-      feedbackDiv.textContent = "⚠️ Please select an answer.";
-      feedbackDiv.style.color = "orange";
-      return;
-    }
-    const answerIndex = parseInt(selected.value, 10);
-    const isCorrect = (answerIndex === scene.correct);
-
-    if (isCorrect) {
-      feedbackDiv.textContent = "✅ Correct! Moving on...";
-      feedbackDiv.style.color = "lightgreen";
-
-      // Optional: award unlocks/flags if you want video->MCQ to unlock too
-      if (Array.isArray(scene.unlockScenes)) scene.unlockScenes.forEach(unlockScene);
-      if (Array.isArray(scene.setFlags)) scene.setFlags.forEach(setFlag);
-
-      setTimeout(() => { if (scene.next) loadScene(scene.next); }, 1200);
-    } else {
-      feedbackDiv.textContent = "❌ Not quite. Try again.";
-      feedbackDiv.style.color = "red";
-    }
-  };
 }
+
 
 
 // === Audio negotiation interaction loader ===
@@ -3865,348 +3827,7 @@ function loadVideoMultiAudioChoiceScene(id) {
 
 
 
-function loadVideoMultiAudioChoiceScene(id) {
-  const scene = scenes[id];
-  if (!scene) {
-    console.error(`Scene data not found for ID: ${id}`);
-    return;
-  }
 
-  // Clear previous UI containers
-  const sceneImage = document.getElementById("scene-image");
-  const sceneText = document.getElementById("scene-text");
-  const container = document.getElementById("scene-container");
-
-  [sceneImage, sceneText, container].forEach(el => {
-    if (el) {
-      el.style.display = "none";
-      el.innerHTML = "";
-    }
-  });
-
-  const gameContainer = document.getElementById("game-container");
-  if (gameContainer) gameContainer.style.display = "block";
-
-  // Create video player
-  const videoElem = document.createElement("video");
-  videoElem.id = "scene-video";
-  videoElem.controls = true;
-  videoElem.style.maxWidth = "100%";
-  videoElem.style.maxHeight = "360px";
-  videoElem.style.display = "block";
-  videoElem.style.margin = "0 auto 20px";
-  videoElem.src = scene.videoSrc;
-  videoElem.load();
-
-  // Show text + video in sceneText container
-  if (sceneText) {
-    sceneText.style.display = "block";
-    sceneText.textContent = scene.text || "";
-    sceneText.appendChild(videoElem);
-  } else {
-    gameContainer.appendChild(videoElem);
-  }
-
-  // Create container for question UI (hidden initially)
-  let questionUI = document.getElementById("video-multi-audio-question-ui");
-  if (!questionUI) {
-    questionUI = document.createElement("div");
-    questionUI.id = "video-multi-audio-question-ui";
-    questionUI.style.maxWidth = "700px";
-    questionUI.style.margin = "0 auto";
-    questionUI.style.color = "#eee";
-    questionUI.style.fontSize = "1.1rem";
-    questionUI.style.display = "none";
-    gameContainer.appendChild(questionUI);
-  }
-  questionUI.innerHTML = "";
-
-  let index = 0;
-  let score = 0;
-
-  function cleanupQuestionUI() {
-    questionUI.style.display = "none";
-    questionUI.innerHTML = "";
-  }
-
-  function showQuestion() {
-    if (index >= scene.questions.length) {
-      cleanupQuestionUI();
-
-      if (videoElem) {
-        videoElem.pause();
-        videoElem.src = "";
-        videoElem.load();
-        videoElem.remove();
-      }
-
-      if (scene.scoring && scene.endings) {
-        let endingScene;
-        if (score >= scene.scoring.high) endingScene = scene.endings.high;
-        else if (score >= scene.scoring.medium) endingScene = scene.endings.medium;
-        else endingScene = scene.endings.low;
-
-        loadScene(endingScene);
-      } else if (scene.next) {
-        loadScene(scene.next);
-      } else {
-        console.warn("No ending or next scene specified for video-multi-audio-choice scene.");
-      }
-      return;
-    }
-
-    const question = scene.questions[index];
-    questionUI.style.display = "block";
-    questionUI.innerHTML = `
-      <p><strong>Question ${index + 1}:</strong> ${question.text}</p>
-      <div id="audio-options-container" style="margin-top: 12px;"></div>
-      <div id="video-multi-audio-feedback" style="margin-top: 10px; font-weight: bold;"></div>
-    `;
-
-    const optionsContainer = document.getElementById("audio-options-container");
-    const feedbackDiv = document.getElementById("video-multi-audio-feedback");
-
-    optionsContainer.innerHTML = "";
-
-    question.options.forEach((audioSrc, i) => {
-      const optionLabel = document.createElement("label");
-      optionLabel.style.display = "block";
-      optionLabel.style.marginBottom = "12px";
-      optionLabel.style.cursor = "pointer";
-
-      const radio = document.createElement("input");
-      radio.type = "radio";
-      radio.name = "audio-choice";
-      radio.value = i;
-      radio.style.marginRight = "10px";
-
-      const audio = document.createElement("audio");
-      audio.controls = true;
-      audio.src = audioSrc;
-      audio.style.verticalAlign = "middle";
-
-      optionLabel.appendChild(radio);
-      optionLabel.appendChild(audio);
-      optionsContainer.appendChild(optionLabel);
-    });
-
-    // Submit button
-    let submitBtn = document.getElementById("video-multi-audio-submit-btn");
-    if (submitBtn) {
-      submitBtn.removeEventListener("click", submitBtn._listener);
-      submitBtn.remove();
-    }
-    submitBtn = document.createElement("button");
-    submitBtn.id = "video-multi-audio-submit-btn";
-    submitBtn.textContent = "Submit Answer";
-    submitBtn.style.marginTop = "15px";
-    submitBtn.style.padding = "8px 16px";
-    submitBtn.style.fontWeight = "bold";
-    submitBtn.style.backgroundColor = "#00ffff";
-    submitBtn.style.border = "none";
-    submitBtn.style.borderRadius = "8px";
-    submitBtn.style.cursor = "pointer";
-    submitBtn.style.transition = "background-color 0.3s ease";
-
-    submitBtn.onmouseover = () => (submitBtn.style.backgroundColor = "#00cccc");
-    submitBtn.onmouseout = () => (submitBtn.style.backgroundColor = "#00ffff");
-
-    questionUI.appendChild(submitBtn);
-
-    submitBtn._listener = () => {
-      const selected = document.querySelector('input[name="audio-choice"]:checked');
-      if (!selected) {
-        feedbackDiv.textContent = "⚠️ Please select an answer.";
-        feedbackDiv.style.color = "orange";
-        return;
-      }
-
-      const answerIndex = parseInt(selected.value, 10);
-
-      if (scene.questions.length === 1 && !scene.scoring) {
-        // Single question, no scoring mode
-        if (answerIndex === question.correct) {
-          feedbackDiv.textContent = "✅ Correct! Moving on...";
-          feedbackDiv.style.color = "lightgreen";
-          cleanupQuestionUI();
-          setTimeout(() => {
-            videoElem.pause();
-            videoElem.remove();
-            if (question.correctNext) loadScene(question.correctNext);
-            else if (scene.next) loadScene(scene.next);
-            else console.warn("No next scene specified after correct answer");
-          }, 1200);
-        } else {
-          feedbackDiv.textContent = "❌ Not quite. Try again.";
-          feedbackDiv.style.color = "salmon";
-          if (question.incorrectNext) {
-            cleanupQuestionUI();
-            setTimeout(() => loadScene(question.incorrectNext), 1200);
-          }
-        }
-      } else {
-        // Multiple questions with scoring mode
-        if (answerIndex === question.correct) {
-          score++;
-          feedbackDiv.textContent = "✅ Correct! Moving on...";
-          feedbackDiv.style.color = "lightgreen";
-        } else {
-          feedbackDiv.textContent = "❌ Not quite. Moving on...";
-          feedbackDiv.style.color = "salmon";
-        }
-
-        submitBtn.disabled = true;
-
-        setTimeout(() => {
-          index++;
-          showQuestion();
-        }, 1500);
-      }
-    };
-
-    submitBtn.addEventListener("click", submitBtn._listener);
-
-  }
-
-  // Start questions only after video ends
-  videoElem.onended = () => {
-    showQuestion();
-  };
-}
-
-
-
-
-
-
-
-function loadVideoScrambleScene(id) {
-  const scene = scenes[id];
-  if (!scene) {
-    console.error(`Scene data not found for ID: ${id}`);
-    return;
-  }
-
-  const gameContainer = document.getElementById("game-container");
-  const sceneText = document.getElementById("scene-text");
-  const sceneImage = document.getElementById("scene-image");
-  const scrambleDiv = document.getElementById("sentence-scramble");
-  const feedbackDiv = document.getElementById("scramble-feedback");
-  const infoDiv = document.getElementById("challenge-info");
-  const container = document.getElementById('scene-container');
-
-  // Clear unrelated UI containers
-  [sceneImage, infoDiv, container].forEach(el => {
-    if (el) {
-      el.style.display = "none";
-      el.innerHTML = "";
-    }
-  });
-
-  // Show scene text instructions (if any)
-  if (sceneText) {
-    if (scene.text) {
-      sceneText.style.display = "block";
-      sceneText.textContent = scene.text;
-    } else {
-      sceneText.style.display = "none";
-      sceneText.innerHTML = "";
-    }
-  }
-
-  // Clear scramble & feedback areas initially, hide scrambleDiv
-  if (scrambleDiv) {
-    scrambleDiv.style.display = "none";
-    scrambleDiv.innerHTML = "";
-  }
-  if (feedbackDiv) {
-    feedbackDiv.style.display = "none";
-    feedbackDiv.textContent = "";
-  }
-
-  // Create or reuse video element
-  let videoElem = document.getElementById("scene-video");
-  if (videoElem) {
-    videoElem.pause();
-    videoElem.src = "";
-    videoElem.load();
-    videoElem.remove();
-  }
-  videoElem = document.createElement("video");
-  videoElem.id = "scene-video";
-  videoElem.src = scene.videoSrc;
-  videoElem.controls = true;
-  videoElem.style.maxWidth = "100%";
-  videoElem.style.maxHeight = "360px";
-  videoElem.style.display = "block";
-  videoElem.style.margin = "0 auto 20px";
-  videoElem.style.borderRadius = "12px";
-
-  if (gameContainer) {
-    gameContainer.insertBefore(videoElem, sceneText.nextSibling);
-  }
-
-  // After video ends, show scramble challenge UI
-  videoElem.onended = () => {
-    if (scrambleDiv && feedbackDiv) {
-      scrambleDiv.style.display = "block";
-      feedbackDiv.style.display = "block";
-      scrambleDiv.innerHTML = "";
-      feedbackDiv.textContent = "";
-
-      // Instruction
-      const instruction = document.createElement("p");
-      instruction.className = "scramble-instructions";
-      instruction.textContent = "🧩 Drag the words into the correct order:";
-      scrambleDiv.appendChild(instruction);
-
-      // Scramble words container
-      const scrambleContainer = document.createElement("div");
-      scrambleContainer.id = "scramble-words";
-      const shuffled = shuffleArray(scene.scramble);
-      shuffled.forEach(word => {
-        const span = document.createElement("span");
-        span.className = "scramble-word";
-        span.textContent = word;
-        scrambleContainer.appendChild(span);
-      });
-      scrambleDiv.appendChild(scrambleContainer);
-
-      // Destroy old Sortable if any
-      if (window.scrambleSortable) {
-        window.scrambleSortable.destroy();
-      }
-      window.scrambleSortable = Sortable.create(scrambleContainer, { animation: 150 });
-
-      // Check answer button
-      const checkBtn = document.createElement("button");
-      checkBtn.textContent = "Check Answer";
-      checkBtn.style.marginTop = "15px";
-      scrambleDiv.appendChild(checkBtn);
-
-      checkBtn.onclick = () => {
-        const words = Array.from(document.querySelectorAll("#scramble-words .scramble-word"));
-        const userOrder = words.map(w => w.textContent.trim());
-
-        if (arraysEqual(userOrder, scene.correct)) {
-          feedbackDiv.textContent = "✅ Correct! Moving on...";
-          feedbackDiv.style.color = "lightgreen";
-          setTimeout(() => {
-            loadScene(scene.next);
-          }, 1200);
-        } else {
-          feedbackDiv.textContent = "❌ Not quite. Try again.";
-          feedbackDiv.style.color = "salmon";
-        }
-      };
-    }
-  };
-
-  // Show the video element now, hide scramble & feedback until video ends
-  videoElem.style.display = "block";
-  if (scrambleDiv) scrambleDiv.style.display = "none";
-  if (feedbackDiv) feedbackDiv.style.display = "none";
-}
 
 // --- Video → Fill-in-the-Blank loader ---
 function loadVideoFillBlankScene(id) {
