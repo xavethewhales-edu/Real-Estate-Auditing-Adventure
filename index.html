@@ -1,10 +1,27 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <!-- Anti-mirror + frame-buster (runs before anything else) -->
+  <script>
+  (function () {
+    const CANON_HOST = "xavethewhales-edu.github.io";   // ✅ your Pages host
+    const CANON_REPO = "THIS-REPO-FOLDER";              // 🔁 TODO: change per game repo folder (e.g., "real-estate-auditing-adventure")
+    const ALLOW = new Set([CANON_HOST, "localhost", "127.0.0.1"]);
+
+    try {
+      if (top !== self) { top.location = location; return; }
+      if (!ALLOW.has(location.hostname)) {
+        location.replace("https://" + CANON_HOST + "/" + CANON_REPO + "/" + location.search + location.hash);
+      }
+    } catch (_) {}
+  })();
+  </script>
+
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <base href="./" />
   <title>Real Estate Auditing Adventure</title>
+
   <link rel="stylesheet" href="style.css" />
   <style>
     .scramble-sentence {
@@ -31,6 +48,7 @@
       <p id="subtitle">Get the job done!</p>
       <div class="button-group">
         <button onclick="startGame()">Play Now</button>
+        <button id="resume-btn" disabled>Resume game</button>
         <button onclick="window.open('https://xavier-b.carrd.co/', '_blank')">About the Creator</button>
       </div>
     </div>
@@ -49,12 +67,144 @@
     <div id="choices-container" class="decision-buttons"></div>
     <div id="scene-container"></div>
     <div id="email-challenge-container"></div>
-
-    <!-- ... -->
-  </div> <!-- close game-container -->
+  </div>
 
   <!-- Sortable.js and Game Script -->
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
   <script src="script.js?v=fix-g2a"></script>
+
+  <!-- Helpers: asset path (GitHub Pages safe) + inline video mount -->
+  <script>
+    function asRel(p){ return (typeof p === "string") ? p.replace(/^\//, "") : p; }
+
+    function mountInlineVideo(opts) {
+      const {container, src, onEnded} = opts;
+      const wrap = document.createElement('div');
+      wrap.style.cssText = "max-width:800px;margin:0 auto 16px;";
+      container.appendChild(wrap);
+
+      const video = document.createElement('video');
+      video.id = 'scene-video';
+      video.src = src;               // **relative path** (no leading /)
+      video.controls = true;
+      video.preload = 'metadata';
+      video.setAttribute('playsinline','');
+      video.setAttribute('webkit-playsinline','');
+      video.style.cssText = "width:100%;max-height:360px;border-radius:12px;background:#000;";
+      wrap.appendChild(video);
+
+      // Big “Tap to play” button (never autoplay)
+      const gate = document.createElement('button');
+      gate.textContent = "Tap to play video";
+      gate.style.cssText = "margin-top:10px;padding:10px 16px;font-weight:700;border:none;border-radius:10px;background:#00ffff;color:#000;cursor:pointer";
+      wrap.appendChild(gate);
+
+      gate.onclick = () => {
+        const p = video.play();
+        if (p && typeof p.catch === 'function') {
+          p.catch(err => {
+            console.warn('[Video] play() rejected', err);
+            gate.remove();
+            const a = document.createElement('a');
+            a.href = src; a.target = '_blank';
+            a.textContent = "Open video in a new tab";
+            a.style.cssText = "display:inline-block;margin-top:8px;color:#00ffff;text-decoration:underline;";
+            wrap.appendChild(a);
+          });
+        }
+      };
+
+      video.addEventListener('ended', () => { if (onEnded) onEnded(); });
+      video.addEventListener('error', () => {
+        console.warn('[Video] media error:', video.error);
+        gate.remove();
+        const a = document.createElement('a');
+        a.href = src; a.target = '_blank';
+        a.textContent = "Open video in a new tab";
+        a.style.cssText = "display:inline-block;margin-top:8px;color:#00ffff;text-decoration:underline;";
+        wrap.appendChild(a);
+      });
+
+      return {video, wrap};
+    }
+  </script>
+
+  <!-- Resume system (after script.js so it can hook loadScene) -->
+  <script>
+  (function () {
+    const SAVE_KEY = 'game_progress_v1';
+    const $ = s => document.querySelector(s), $id = s => document.getElementById(s);
+
+    function getHomeEl(){ return $id('overlay-content')||$id('overlay')||$id('home')||$id('homepage'); }
+    function getGameEl(){ return $id('game-container'); }
+    function readSave(){ try { return JSON.parse(localStorage.getItem(SAVE_KEY)); } catch { return null; } }
+    function writeSave(o){ try { localStorage.setItem(SAVE_KEY, JSON.stringify(o)); } catch {} }
+    function scenesMap(){ return window.scenes || (typeof scenes!=='undefined' ? scenes : null); }
+    function sceneExists(id){
+      const sm = scenesMap(); if(!sm||!id) return false;
+      return Array.isArray(sm) ? sm.some(x=>x&&x.id===id) : !!sm[id];
+    }
+    function showHome(){ const h=getHomeEl(), g=getGameEl(); if (h) h.style.display=''; if (g) g.style.display='none'; }
+    function hideHome(){ const h=getHomeEl(), g=getGameEl(); if (h) h.style.display='none'; if (g) g.style.display='block'; }
+
+    async function tryResume(){
+      const last = readSave()?.lastScene;
+      if(!last || !sceneExists(last)) { showHome(); updateResumeBtn(); return; }
+      hideHome();
+      if (typeof window.loadScene !== 'function') {
+        let tries=0; await new Promise(res => (function wait(){
+          if (typeof loadScene==='function') return res();
+          if (tries++>200) return res();
+          setTimeout(wait,30);
+        })());
+      }
+      if (typeof window.loadScene !== 'function') { showHome(); updateResumeBtn(); return; }
+      try { window.loadScene(last); } catch(e){ console.warn('[Resume] loadScene error', e); showHome(); }
+    }
+
+    function updateResumeBtn(){
+      const btn = $id('resume-btn'); if (!btn) return;
+      const last = readSave()?.lastScene;
+      const ok = !!last && sceneExists(last);
+      btn.disabled = !ok;
+      btn.onclick = ok ? tryResume : null;
+    }
+
+    // Hook loadScene to save progress
+    (function hook(){
+      function install(orig){
+        window.loadScene = function(id){
+          const r = orig.apply(this, arguments);
+          const sv = readSave() || {};
+          sv.lastScene = id;
+          if (window.progress) {
+            sv.flags    = window.progress.flags    || sv.flags || {};
+            sv.unlocked = Array.from(window.progress.unlocked || sv.unlocked || []);
+          }
+          writeSave(sv);
+          try { updateResumeBtn(); } catch {}
+          return r;
+        };
+        console.log('[Resume] loadScene hooked.');
+      }
+      if (typeof window.loadScene === 'function') install(window.loadScene);
+      else { let tries=0;(function wait(){ if(typeof window.loadScene==='function') return install(window.loadScene);
+        if(tries++>200) return; setTimeout(wait,30); })(); }
+    })();
+
+    // Simple start button handler
+    window.startGame = function () {
+      const home = getHomeEl(), game = getGameEl();
+      if (home) home.style.display = 'none';
+      if (game) game.style.display = 'block';
+      if (typeof loadScene === 'function') loadScene('scene1'); // 🔁 change entry scene if needed
+    };
+
+    window.addEventListener('DOMContentLoaded', () => {
+      showHome();
+      updateResumeBtn();
+    });
+  })();
+  </script>
 </body>
 </html>
